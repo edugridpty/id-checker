@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ID Scanner Portal</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 12px;
+      background: #f5f5f5;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0 0 4px;
+    }
+    p {
+      font-size: 12px;
+      margin: 0 0 8px;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      margin-bottom: 10px;
+    }
+    video {
+      width: 100%;
+      max-width: 420px;
+      border-radius: 10px;
+      background: #000;
+    }
+    .frame-wrapper {
+      position: relative;
+      display: inline-block;
+      width: 100%;
+      max-width: 420px;
+    }
+
+    /* >>> BIGGER CAPTURE BOX <<< */
+    .guide-rect {
+      position: absolute;
+      border: 3px dashed #00a000;
+      border-radius: 10px;
+      top: 18%;
+      left: 4%;
+      width: 92%;
+      height: 52%;
+      box-sizing: border-box;
+      pointer-events: none;
+    }
+
+    button {
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: none;
+      background: #00a000;
+      color: #ffffff;
+      font-size: 13px;
+      cursor: pointer;
+      margin-top: 6px;
+      margin-right: 6px;
+    }
+    button.secondary {
+      background: #555;
+    }
+    button:disabled {
+      background: #999;
+      cursor: not-allowed;
+    }
+    .preview-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .preview-block {
+      flex: 1;
+      text-align: left;
+    }
+    .preview-label {
+      font-size: 11px;
+      margin-bottom: 2px;
+    }
+    .preview-img {
+      width: 100%;
+      max-width: 140px;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      background: #fafafa;
+      display: block;
+    }
+    .status {
+      font-size: 12px;
+      color: #555;
+      margin-top: 4px;
+      min-height: 16px;
+    }
+    .hint {
+      font-size: 11px;
+      color: #777;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h1>ID Capture</h1>
+    <p>Fill the green box with the ID as much as possible, but keep the whole card inside.</p>
+
+    <div class="frame-wrapper">
+      <video id="video" autoplay playsinline></video>
+      <div class="guide-rect"></div>
+    </div>
+
+    <div class="status" id="statusText">Allow camera access to begin.</div>
+
+    <button id="captureFrontBtn">Capture FRONT (2s)</button>
+    <button id="captureBackBtn" disabled>Capture BACK (2s)</button>
+    <button id="flashBtn" class="secondary">Flashlight: Off</button>
+    <button id="resetBtn" class="secondary">Reset</button>
+
+    <div class="preview-row">
+      <div class="preview-block">
+        <div class="preview-label">Front preview</div>
+        <img id="frontPreview" class="preview-img" />
+      </div>
+      <div class="preview-block">
+        <div class="preview-label">Back preview</div>
+        <img id="backPreview" class="preview-img" />
+      </div>
+    </div>
+
+    <div class="hint">
+      Move closer until the card almost touches the box edges. Retake if the ID number is not sharp.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:14px;margin:0 0 4px;">Create printable PDF</h2>
+    <p>When both previews are clear, tap below.</p>
+    <button id="generatePdfBtn" disabled>Create PDF</button>
+  </div>
+
+  <!-- jsPDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+    const video = document.getElementById("video");
+    const statusText = document.getElementById("statusText");
+    const captureFrontBtn = document.getElementById("captureFrontBtn");
+    const captureBackBtn = document.getElementById("captureBackBtn");
+    const flashBtn = document.getElementById("flashBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const generatePdfBtn = document.getElementById("generatePdfBtn");
+
+    const frontPreview = document.getElementById("frontPreview");
+    const backPreview = document.getElementById("backPreview");
+
+    let stream = null;
+    let videoTrack = null;
+    let torchOn = false;
+
+    let frontDataUrl = null;
+    let backDataUrl = null;
+
+    const SHARPNESS_MIN = 40;
+    const BRIGHT_MIN = 80;
+    const BRIGHT_MAX = 220;
+
+    // ------------------------------
+    // FORCE BACK CAMERA
+    // ------------------------------
+    async function initCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false
+        });
+      } catch (forceError) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false
+        });
+      }
+
+      video.srcObject = stream;
+      videoTrack = stream.getVideoTracks()[0] || null;
+      setupTorchButton();
+      statusText.textContent = 'Center FRONT side and press "Capture FRONT".';
+    }
+
+    function setupTorchButton() {
+      if (!videoTrack?.getCapabilities) { flashBtn.disabled = true; return; }
+      const caps = videoTrack.getCapabilities();
+      if (!caps.torch) { flashBtn.disabled = true; return; }
+
+      flashBtn.onclick = async () => {
+        torchOn = !torchOn;
+        await videoTrack.applyConstraints({ advanced: [{ torch: torchOn }] });
+        flashBtn.textContent = torchOn ? "Flashlight: On" : "Flashlight: Off";
+      };
+    }
+
+    // -----------------------------------------------------
+    // NEW CROP AREA — MATCHES BIGGER BOX
+    // -----------------------------------------------------
+    function captureRegionCanvas() {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+
+      const cropX = w * 0.04;
+      const cropY = h * 0.18;
+      const cropW = w * 0.92;
+      const cropH = h * 0.52;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = cropW;
+      canvas.height = cropH;
+      canvas.getContext("2d").drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+      return canvas;
+    }
+
+    function measureSharpnessAndBrightness(canvas) {
+      const ctx = canvas.getContext("2d");
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+      let sumB = 0, count = 0, sumG = 0;
+
+      for (let y = 0; y < canvas.height; y += 3) {
+        for (let x = 0; x < canvas.width; x += 3) {
+          const i = (y * canvas.width + x) * 4;
+          const grey = data[i] * 0.299 + data[i+1]*0.587 + data[i+2]*0.114;
+
+          sumB += grey;
+          count++;
+
+          if (x + 3 < canvas.width) {
+            const i2 = (y * canvas.width + (x+3)) * 4;
+            const grey2 = data[i2] * 0.299 + data[i2+1]*0.587 + data[i2+2]*0.114;
+            sumG += (grey - grey2) ** 2;
+          }
+        }
+      }
+
+      return { brightness: sumB / count, sharpness: sumG / count };
+    }
+
+    function enhanceCanvas(canvas) {
+      const ctx = canvas.getContext("2d");
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = img.data;
+
+      const c = 1.2;
+
+      for (let i = 0; i < d.length; i += 4) {
+        let g = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
+        g = (g - 128) * c + 128;
+        g = Math.max(0, Math.min(255, g));
+        d[i] = d[i+1] = d[i+2] = g;
+      }
+
+      ctx.putImageData(img, 0, 0);
+      return canvas;
+    }
+
+    function countdown(side) {
+      let sec = 2;
+      statusText.textContent = "Hold still... " + sec;
+
+      const t = setInterval(() => {
+        sec--;
+        if (sec === 0) {
+          clearInterval(t);
+          statusText.textContent = "Capturing...";
+          takePicture(side);
+        } else {
+          statusText.textContent = "Hold still... " + sec;
+        }
+      }, 1000);
+    }
+
+    function takePicture(side) {
+      const canvas = captureRegionCanvas();
+      const { brightness, sharpness } = measureSharpnessAndBrightness(canvas);
+
+      if (brightness < BRIGHT_MIN) { alert("Too dark."); return; }
+      if (brightness > BRIGHT_MAX) { alert("Too bright / glare."); return; }
+      if (sharpness < SHARPNESS_MIN) { alert("Image blurry."); return; }
+
+      enhanceCanvas(canvas);
+
+      const url = canvas.toDataURL("image/jpeg", 1.0);
+
+      if (side === "front") {
+        frontDataUrl = url;
+        frontPreview.src = url;
+        captureBackBtn.disabled = false;
+        captureFrontBtn.textContent = "Retake FRONT";
+        statusText.textContent = "Flip card and capture BACK.";
+      } else {
+        backDataUrl = url;
+        backPreview.src = url;
+        captureBackBtn.textContent = "Retake BACK";
+        statusText.textContent = "Both sides captured.";
+      }
+
+      if (frontDataUrl && backDataUrl) generatePdfBtn.disabled = false;
+    }
+
+    captureFrontBtn.onclick = () => countdown("front");
+    captureBackBtn.onclick = () => countdown("back");
+
+    resetBtn.onclick = () => {
+      frontDataUrl = null;
+      backDataUrl = null;
+      frontPreview.src = "";
+      backPreview.src = "";
+      captureBackBtn.disabled = true;
+      generatePdfBtn.disabled = true;
+      captureFrontBtn.textContent = "Capture FRONT (2s)";
+      captureBackBtn.textContent = "Capture BACK (2s)";
+      statusText.textContent = 'Center FRONT side and press "Capture FRONT".';
+    };
+
+    // -----------------------------------------------------
+    // >>> NEW PDF WITH CERTIFICATION BOX ADDED <<<
+    // -----------------------------------------------------
+    generatePdfBtn.onclick = () => {
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ unit: "mm", format: "a4" });
+
+      const pageWidth = pdf.internal.pageSize.width;
+
+      const cardWidth = 170;
+      const cardHeight = 110;
+      const x = (pageWidth - cardWidth) / 2;
+
+      pdf.setFontSize(11);
+      pdf.text("COPY OF ID DOCUMENT – FRONT AND BACK (UP-SCALED FOR READABILITY)", 10, 10);
+
+      pdf.addImage(frontDataUrl, "JPEG", x, 16, cardWidth, cardHeight);
+      pdf.addImage(backDataUrl, "JPEG", x, 16 + cardHeight + 4, cardWidth, cardHeight);
+
+      // Certification block
+      const boxY = 16 + cardHeight * 2 + 12;
+      pdf.setFontSize(12);
+
+      pdf.rect(10, boxY, pageWidth - 20, 40);
+
+      pdf.text("VERIFICATION / POLICE STAMP & SIGNATURE", 12, boxY + 7);
+      pdf.setFontSize(10);
+
+      pdf.text("Official Stamp:", 12, boxY + 18);
+      pdf.text("Signature:", 12, boxY + 30);
+      pdf.text("Date:", pageWidth - 40, boxY + 30);
+
+      pdf.save("ID_Verification.pdf");
+    };
+
+    initCamera();
+  </script>
+
+</body>
+</html>
